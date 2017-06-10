@@ -3,6 +3,7 @@ KlikaanKlikuit-HomeKit bridge
 
 Connects KlikaanKlikuit RF switches to homekit using a server
 connected to an arduino connected to a 433.92Mhz transmitter.
+[Demo video](https://www.youtube.com/edit?o=U&video_id=mdhz_0Kp_ns)
 
 How to:
 
