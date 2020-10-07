@@ -1,15 +1,20 @@
 package main
 
 import (
+	"github.com/brutella/hc"
+	"github.com/brutella/hc/accessory"
+	"github.com/brutella/hc/service"
+
+	"github.com/tarm/serial"
+
 	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
-	"github.com/brutella/hc"
-	"github.com/brutella/hc/accessory"
-	"github.com/brutella/hc/service"
-	"github.com/tarm/serial"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 )
 
 type kakuCmd struct {
@@ -24,16 +29,40 @@ type KikaAccessory struct {
 	switches []*service.Switch
 }
 
-var acc *KikaAccessory
-var cmdChan chan kakuCmd
+var (
+	acc       *KikaAccessory
+	cmdChan   chan kakuCmd
+	serialDev string
+)
 
-func sendKakuPulses(r *bufio.Reader, w *bufio.Writer, cmd kakuCmd) {
-	line, err := r.ReadBytes(byte('\n'))
+func sendKakuPulses(cmd kakuCmd) {
+	s, err := serial.OpenPort(&serial.Config{Name: serialDev, Baud: 115200})
 	if err != nil {
+		log.Fatalf("Could not open serial port: %v", err)
+	}
+
+	r := bufio.NewReader(s)
+	w := bufio.NewWriter(s)
+
+	if err := w.WriteByte('\n'); err != nil {
 		log.Fatal(err)
 	}
-	line = bytes.TrimSpace(line)
-	if !bytes.Equal(line, []byte("?")) {
+	if err := w.Flush(); err != nil {
+		log.Fatal(err)
+	}
+
+	for {
+		line, err := r.ReadBytes(byte('\n'))
+		if err != nil {
+			log.Fatal(err)
+		}
+		line = bytes.TrimSpace(line)
+		if bytes.Equal(line, []byte("C")) {
+			continue
+		}
+		if bytes.Equal(line, []byte("?")) {
+			break
+		}
 		log.Fatalf("Unexpected line: %s", line)
 	}
 
@@ -65,7 +94,7 @@ func sendKakuPulses(r *bufio.Reader, w *bufio.Writer, cmd kakuCmd) {
 		log.Fatal(err)
 	}
 
-	line, err = r.ReadBytes(byte('\n'))
+	line, err := r.ReadBytes(byte('\n'))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -95,9 +124,8 @@ func generateKakuPulses(cmd kakuCmd) ([]int, int) {
 
 func main() {
 	var pin string
-	var serialDev string
 	var port int
-	var hwid int
+	var rawIds string
 	var storagePath string
 
 	cmdChan = make(chan kakuCmd, 2)
@@ -106,44 +134,50 @@ func main() {
 	flag.IntVar(&port, "port", 0, "Local port to use")
 	flag.StringVar(&serialDev, "serial", "/dev/ttyUSB0",
 		"path to serial device connected to arduino")
-	flag.IntVar(&hwid, "hwid", 12312312, "hwid of klikaanklikuit group")
+	flag.StringVar(&rawIds, "hwid", "12312312", "hwid(s) of klikaanklikuit group comma separated")
 	flag.StringVar(&storagePath, "db", "./db", "path to local storage")
 
 	flag.Parse()
 
-	s, err := serial.OpenPort(&serial.Config{Name: serialDev, Baud: 115200})
-	if err != nil {
-		log.Fatalf("Could not open serial port: %v", err)
+	ids := []int{}
+	for _, rawId := range strings.Split(rawIds, ",") {
+		id, err := strconv.Atoi(rawId)
+		if err != nil {
+			log.Fatalf("Parsing hwids: %v", err)
+		}
+		ids = append(ids, id)
 	}
 
 	info := accessory.Info{
-		Name: fmt.Sprintf("KlikAanKlikUit"),
+		Name: "KlikAanKlikUit",
 	}
 
 	acc = new(KikaAccessory)
 	acc.Accessory = accessory.New(info, accessory.TypeOther)
 	acc.switches = []*service.Switch{}
 
-	for i := 0; i < 3; i++ {
-		sw := service.NewSwitch()
-		acc.switches = append(acc.switches, sw)
-		acc.AddService(sw.Service)
+	for _, id := range ids {
+		for i := 0; i < 3; i++ {
+			sw := service.NewSwitch()
+			acc.switches = append(acc.switches, sw)
+			acc.AddService(sw.Service)
 
-		func(i int) {
+			id := id
+			i := i
 			sw.On.OnValueRemoteUpdate(func(state bool) {
 				cmdChan <- kakuCmd{
-					hwid:    hwid,
+					hwid:    id,
 					channel: i,
 					group:   false,
 					state:   state,
 				}
 			})
-		}(i)
+		}
 	}
 
 	var portString = ""
 	if port != 0 {
-		portString = string(port)
+		portString = strconv.Itoa(port)
 	}
 	config := hc.Config{
 		Pin:         pin,
@@ -155,18 +189,16 @@ func main() {
 		log.Panic(err)
 	}
 
-	go func(s *serial.Port) {
-		r := bufio.NewReader(s)
-		w := bufio.NewWriter(s)
-
+	go func() {
 		for cmd := range cmdChan {
-			sendKakuPulses(r, w, cmd)
+			sendKakuPulses(cmd)
 		}
-	}(s)
+	}()
 
 	hc.OnTermination(func() {
 		close(cmdChan)
 		t.Stop()
+		os.Exit(0)
 	})
 
 	t.Start()
