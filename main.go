@@ -45,16 +45,16 @@ func sendKakuPulses(cmd kakuCmd) {
 	w := bufio.NewWriter(s)
 
 	if err := w.WriteByte('\n'); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Coud not write to serial (1): %v", err)
 	}
 	if err := w.Flush(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not flush: %v", err)
 	}
 
 	for {
 		line, err := r.ReadBytes(byte('\n'))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Could not read from serial: %v", err)
 		}
 		line = bytes.TrimSpace(line)
 		if bytes.Equal(line, []byte("C")) {
@@ -67,7 +67,7 @@ func sendKakuPulses(cmd kakuCmd) {
 	}
 
 	if err := w.WriteByte('R'); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not write to serial (2): %v", err)
 	}
 
 	pulses, T := generateKakuPulses(cmd)
@@ -75,28 +75,28 @@ func sendKakuPulses(cmd kakuCmd) {
 	pulses = append(pulses, pulses...)
 
 	if _, err := w.WriteString(fmt.Sprintf("%d\n", len(pulses)+1)); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not write to serial (3): %v", err)
 	}
 
 	for i := 0; i < len(pulses)+1; i++ {
 		if _, err := w.WriteString(fmt.Sprintf("%d\n", T)); err != nil {
-			log.Fatal(err)
+			log.Fatalf("Could not write to serial (4): %v", err)
 		}
 		if i == len(pulses) {
 			break
 		}
 		if _, err := w.WriteString(fmt.Sprintf("%d\n", pulses[i])); err != nil {
-			log.Fatal(err)
+			log.Fatalf("Could not write to serial (5): %v", err)
 		}
 	}
 
 	if err := w.Flush(); err != nil {
-		log.Fatal(err)
+		log.Fatal("Could not flush (2): %v", err)
 	}
 
 	line, err := r.ReadBytes(byte('\n'))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Could not read from serial (2): %v", err)
 	}
 	line = bytes.TrimSpace(line)
 	if !bytes.Equal(line, []byte("!")) {
@@ -186,7 +186,7 @@ func main() {
 	}
 	t, err := hc.NewIPTransport(config, acc.Accessory)
 	if err != nil {
-		log.Panic(err)
+		log.Fatalf("Could not create transport: %v", err)
 	}
 
 	go func() {
