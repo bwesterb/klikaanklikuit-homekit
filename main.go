@@ -9,9 +9,11 @@ import (
 
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -33,6 +35,8 @@ var (
 	acc       *KikaAccessory
 	cmdChan   chan kakuCmd
 	serialDev string
+	ids       []int
+	switches  map[int][3]*service.Switch
 )
 
 func sendKakuPulses(cmd kakuCmd) {
@@ -123,11 +127,15 @@ func generateKakuPulses(cmd kakuCmd) ([]int, int) {
 }
 
 func main() {
-	var pin string
-	var port int
-	var rawIds string
-	var storagePath string
+	var (
+		pin         string
+		port        int
+		rawIds      string
+		storagePath string
+		httpAddr    string
+	)
 
+	switches = make(map[int][3]*service.Switch)
 	cmdChan = make(chan kakuCmd, 2)
 
 	flag.StringVar(&pin, "pin", "00102003", "pincode")
@@ -136,10 +144,10 @@ func main() {
 		"path to serial device connected to arduino")
 	flag.StringVar(&rawIds, "hwid", "12312312", "hwid(s) of klikaanklikuit group comma separated")
 	flag.StringVar(&storagePath, "db", "./db", "path to local storage")
+	flag.StringVar(&httpAddr, "http-listen", "", "if set, exposes http interface")
 
 	flag.Parse()
 
-	ids := []int{}
 	for _, rawId := range strings.Split(rawIds, ",") {
 		id, err := strconv.Atoi(rawId)
 		if err != nil {
@@ -157,9 +165,11 @@ func main() {
 	acc.switches = []*service.Switch{}
 
 	for _, id := range ids {
+		var switchSet [3]*service.Switch
 		for i := 0; i < 3; i++ {
 			sw := service.NewSwitch()
 			acc.switches = append(acc.switches, sw)
+			switchSet[i] = sw
 			acc.AddService(sw.Service)
 
 			id := id
@@ -173,6 +183,7 @@ func main() {
 				}
 			})
 		}
+		switches[id] = switchSet
 	}
 
 	var portString = ""
@@ -200,6 +211,75 @@ func main() {
 		t.Stop()
 		os.Exit(0)
 	})
+
+	if httpAddr != "" {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" {
+				ret := make(map[int][3]bool)
+				for id, _ := range switches {
+					set := [3]bool{}
+					for i := 0; i < 3; i++ {
+						set[i] = switches[id][i].On.GetValue()
+					}
+					ret[id] = set
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(ret)
+				return
+			}
+
+			if r.Method == "PUT" {
+				q := r.URL.Query()
+				rawId := q.Get("id")
+				id, err := strconv.Atoi(rawId)
+				if err != nil {
+					w.WriteHeader(400)
+					fmt.Fprintf(w, "can't parse id")
+					return
+				}
+
+				if _, ok := switches[id]; !ok {
+					w.WriteHeader(400)
+					fmt.Fprintf(w, "no such id")
+					return
+				}
+
+				rawVal := q.Get("val")
+				intVal, err := strconv.Atoi(rawVal)
+				if err != nil || (intVal != 0 && intVal != 1) {
+					w.WriteHeader(400)
+					fmt.Fprintf(w, "can't parse val")
+					return
+				}
+				val := intVal == 1
+
+				rawSw := q.Get("sw")
+				sw, err := strconv.Atoi(rawSw)
+				if err != nil || (sw < 0 || sw > 2) {
+					w.WriteHeader(400)
+					fmt.Fprintf(w, "can't parse sw")
+					return
+				}
+
+				switches[id][sw].On.SetValue(val)
+				cmdChan <- kakuCmd{
+					hwid:    id,
+					channel: sw,
+					group:   false,
+					state:   val,
+				}
+				fmt.Fprintf(w, "ok")
+				return
+			}
+
+			w.WriteHeader(400)
+			fmt.Fprintf(w, "unsupported method")
+		})
+		go func() {
+			err := http.ListenAndServe(httpAddr, nil)
+			log.Fatalf("http.ListenAndServe: %v", err)
+		}()
+	}
 
 	t.Start()
 }
