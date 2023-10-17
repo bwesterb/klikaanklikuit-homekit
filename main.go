@@ -1,22 +1,25 @@
 package main
 
 import (
-	"github.com/brutella/hc"
-	"github.com/brutella/hc/accessory"
-	"github.com/brutella/hc/service"
+	"github.com/brutella/hap"
+	"github.com/brutella/hap/accessory"
+	"github.com/brutella/hap/service"
 
 	"github.com/tarm/serial"
 
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type kakuCmd struct {
@@ -27,7 +30,7 @@ type kakuCmd struct {
 }
 
 type KikaAccessory struct {
-	*accessory.Accessory
+	*accessory.A
 	switches []*service.Switch
 }
 
@@ -161,7 +164,7 @@ func main() {
 	}
 
 	acc = new(KikaAccessory)
-	acc.Accessory = accessory.New(info, accessory.TypeOther)
+	acc.A = accessory.New(info, accessory.TypeOther)
 	acc.switches = []*service.Switch{}
 
 	for _, id := range ids {
@@ -170,7 +173,7 @@ func main() {
 			sw := service.NewSwitch()
 			acc.switches = append(acc.switches, sw)
 			switchSet[i] = sw
-			acc.AddService(sw.Service)
+			acc.AddS(sw.S)
 
 			id := id
 			i := i
@@ -190,15 +193,16 @@ func main() {
 	if port != 0 {
 		portString = strconv.Itoa(port)
 	}
-	config := hc.Config{
-		Pin:         pin,
-		Port:        portString,
-		StoragePath: storagePath,
-	}
-	t, err := hc.NewIPTransport(config, acc.Accessory)
+
+	fs := hap.NewFsStore(storagePath)
+
+	s, err := hap.NewServer(fs, acc.A)
 	if err != nil {
-		log.Fatalf("Could not create transport: %v", err)
+		log.Panic(err)
 	}
+
+	s.Pin = pin
+	s.Addr = ":" + portString
 
 	go func() {
 		for cmd := range cmdChan {
@@ -206,11 +210,7 @@ func main() {
 		}
 	}()
 
-	hc.OnTermination(func() {
-		close(cmdChan)
-		t.Stop()
-		os.Exit(0)
-	})
+	ctx, cancel := context.WithCancel(context.Background())
 
 	if httpAddr != "" {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +219,7 @@ func main() {
 				for id, _ := range switches {
 					set := [3]bool{}
 					for i := 0; i < 3; i++ {
-						set[i] = switches[id][i].On.GetValue()
+						set[i] = switches[id][i].On.Value()
 					}
 					ret[id] = set
 				}
@@ -281,5 +281,16 @@ func main() {
 		}()
 	}
 
-	t.Start()
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, syscall.SIGTERM)
+	go func() {
+		<-c
+		signal.Stop(c)
+		cancel()
+	}()
+
+	s.ListenAndServe(ctx)
+	close(cmdChan)
+	os.Exit(0)
 }
