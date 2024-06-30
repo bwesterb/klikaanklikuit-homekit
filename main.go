@@ -132,17 +132,19 @@ func generateKakuPulses(cmd kakuCmd) ([]int, int) {
 func main() {
 	var (
 		pin         string
-		port        int
+		addr        string
 		rawIds      string
 		storagePath string
 		httpAddr    string
+		ifacesRaw   string
 	)
 
 	switches = make(map[int][3]*service.Switch)
 	cmdChan = make(chan kakuCmd, 2)
 
 	flag.StringVar(&pin, "pin", "00102003", "pincode")
-	flag.IntVar(&port, "port", 0, "Local port to use")
+	flag.StringVar(&addr, "addr", ":", "Local address to use")
+	flag.StringVar(&ifacesRaw, "ifaces", "", "Comma-separated list of interfaces to advertise on")
 	flag.StringVar(&serialDev, "serial", "/dev/ttyUSB0",
 		"path to serial device connected to arduino")
 	flag.StringVar(&rawIds, "hwid", "12312312", "hwid(s) of klikaanklikuit group comma separated")
@@ -150,6 +152,11 @@ func main() {
 	flag.StringVar(&httpAddr, "http-listen", "", "if set, exposes http interface")
 
 	flag.Parse()
+
+	var ifaces []string
+	if ifacesRaw != "" {
+		ifaces = strings.Split(ifacesRaw, ",")
+	}
 
 	for _, rawId := range strings.Split(rawIds, ",") {
 		id, err := strconv.Atoi(rawId)
@@ -189,11 +196,6 @@ func main() {
 		switches[id] = switchSet
 	}
 
-	var portString = ""
-	if port != 0 {
-		portString = strconv.Itoa(port)
-	}
-
 	fs := hap.NewFsStore(storagePath)
 
 	s, err := hap.NewServer(fs, acc.A)
@@ -202,7 +204,8 @@ func main() {
 	}
 
 	s.Pin = pin
-	s.Addr = ":" + portString
+	s.Addr = addr
+	s.Ifaces = ifaces
 
 	go func() {
 		for cmd := range cmdChan {
